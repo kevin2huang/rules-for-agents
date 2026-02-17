@@ -1,397 +1,492 @@
 # Python Code Generation Rules
-## Clean Code + Architectural Patterns
 
-A structured guide for generating clean, maintainable, production-grade Python backend code.
-Optimized for testability, domain modeling, and long-term scalability.
+This document defines how to generate clean, maintainable, production-grade Python code.
+
+These rules are prescriptive. Follow them unless explicitly instructed otherwise.
 
 ---
 
-# 1. Core Philosophy
+# 0. Core Philosophy
 
 - Explicit > implicit
 - Simple > clever
 - Composition > inheritance
 - Exceptions > sentinel values
 - Dataclasses > nested dictionaries
-- Abstractions over implementation details
 - Domain logic independent from infrastructure
-- Architecture should slow the growth of complexity
+- Dependencies must point inward
+- Optimize for testability first
+- Profile before optimizing
+- Code should be readable without comments
 
 ---
 
-# 2. Readability & Clarity
+# 1. Required Project Structure (For Non-Trivial Services)
 
-## General Principles
+```
+service_name/
+    domain/
+        models.py
+        events.py
+        exceptions.py
+        repository.py
+    service_layer/
+        commands.py
+        handlers.py
+        unit_of_work.py
+        messagebus.py (optional)
+    infrastructure/
+        repository.py
+        orm.py
+        uow.py
+    entrypoints/
+        api.py
+    bootstrap.py
+```
 
-- Move complex expressions into helper functions.
-- Avoid repeating logic — extract reusable abstractions.
-- Prefer clarity over cleverness.
-- Avoid `for/else` blocks.
-- Reduce visual noise (avoid redundant slice bounds).
-- Avoid negative strides and complex slicing expressions.
-- Avoid unpacking into 4+ variables.
+Do not collapse layers unless the system is trivial.
 
-## Looping & Iteration
+---
+
+# 2. Dependency Direction (Strict)
+
+Allowed:
+
+```
+entrypoints → service_layer → domain
+infrastructure → domain
+bootstrap → everything
+```
+
+Forbidden:
+
+- domain importing infrastructure
+- domain importing ORMs
+- domain importing web frameworks
+- service_layer importing FastAPI/Flask
+- returning ORM models outside infrastructure
+
+If violated, refactor.
+
+---
+
+# 3. Code Readability & Documentation Policy
+
+## 3.1 Naming Is the First Documentation
+
+- Use descriptive names.
+- Avoid abbreviations unless domain-standard.
+- Functions describe behavior.
+- Classes represent domain concepts.
+- Avoid vague names like `data`, `obj`, `tmp`.
 
 Prefer:
-- `enumerate()` over `range(len(...))`
-- `zip()` for parallel iteration
-- `itertools.zip_longest()` for uneven iterables
-- Catch-all unpacking:
 
 ```python
-head, *rest = items
+allocate_order_to_batch()
 ```
 
 Avoid:
-- Manual indexing when unpacking is clearer.
-- Slicing with start + end + stride together.
 
----
-
-# 3. Functions & API Design
-
-## Return Values
-
-- Never return `None` to indicate failure.
-- Raise explicit domain exceptions.
-- Use tuples only for small, obvious multiple returns.
-- For structured returns, use `@dataclass`.
-
-## Parameter Design
-
-- Prefer keyword arguments for clarity.
-- Use keyword-only args (`*`) to prevent ambiguity.
-- Use positional-only args (`/`) to reduce API coupling.
-- Never use mutable default values.
-- Use `None` for dynamic defaults and document behavior.
-
----
-
-# 4. Domain-Driven Design (DDD) Rules
-
-## Domain Model First
-
-- Model the business rules explicitly.
-- Domain layer must contain:
-  - Entities
-  - Value Objects
-  - Aggregates
-  - Domain Exceptions
-  - Domain Events
-
-The domain model:
-- Must not depend on Flask, SQLAlchemy, ORMs, or infrastructure.
-- Must be pure Python.
-- Must have fast unit tests.
-- Must enforce invariants internally.
-
-## Entities
-
-- Have identity.
-- Encapsulate business rules.
-- Mutate through explicit methods.
-
-## Value Objects
-
-- Immutable.
-- Equality based on value.
-- Use `@dataclass(frozen=True)`.
-
-## Aggregates
-
-- Define consistency boundaries.
-- Only modify data through aggregate roots.
-- One aggregate = one repository.
-
----
-
-# 5. Layered Architecture Rules
-
-Follow strict layering:
-
-```
-Entrypoints (API / CLI)
-        ↓
-Service Layer
-        ↓
-Domain Model
-        ↓
-Repositories (Abstraction)
-        ↓
-Infrastructure (ORM / DB / External APIs)
+```python
+alloc()
 ```
 
-Rules:
+---
 
-- Dependencies must only point inward.
-- Domain layer cannot import infrastructure.
-- Service layer orchestrates, but does not contain business rules.
-- Infrastructure implements interfaces defined by inner layers.
+## 3.2 Comments Must Explain “Why”, Not “What”
 
-Avoid "big ball of mud" architectures.
+Do NOT restate obvious code.
+
+Bad:
+
+```python
+# increment counter
+counter += 1
+```
+
+Good:
+
+```python
+# Optimistic concurrency check to prevent lost updates
+if order.version != expected_version:
+    raise ConcurrencyError(...)
+```
+
+Use comments to explain:
+
+- Business invariants
+- Non-obvious algorithm decisions
+- Performance tradeoffs
+- Architectural constraints
+- External system workarounds
+
+---
+
+## 3.3 Docstring Rules
+
+Add docstrings when:
+
+- The function/class is part of a public API
+- The behavior is non-obvious
+- Side effects exist
+- Invariants or preconditions matter
+
+Example:
+
+```python
+def allocate(self, batch: Batch) -> None:
+    """
+    Allocate this order to a batch.
+
+    Raises:
+        InvalidAllocation if batch cannot accept order.
+    """
+```
+
+Do NOT add docstrings to trivial private helpers.
+
+---
+
+## 3.4 Keep Functions Small
+
+If a function requires heavy commenting to explain behavior, refactor instead.
+
+- One level of abstraction per function.
+- Keep happy path visually clear.
+- Use guard clauses early.
+- Avoid deeply nested conditionals.
+
+---
+
+## 3.5 Public Interfaces Must Be Documented
+
+Service handlers, repository interfaces, and domain entities must include minimal docstrings describing:
+
+- Purpose
+- Invariants
+- Side effects
+
+---
+
+# 4. Domain Layer Rules (Pure Core)
+
+Must be:
+
+- Pure Python
+- Framework-independent
+- Fast to unit test
+
+Must contain:
+
+- Entities
+- Value objects
+- Domain events
+- Domain exceptions
+- Abstract repository interfaces
+
+Entity rules:
+
+- Have identity
+- Enforce invariants internally
+- Mutate via explicit methods
+- Emit domain events when state changes
+
+Value objects:
+
+- Immutable
+- Use `@dataclass(frozen=True)`
+- Equality based on value
+
+---
+
+# 5. Service Layer Rules
+
+Purpose: Orchestrate use cases.
+
+Must:
+
+- Load aggregates via repository
+- Call domain methods
+- Commit through Unit of Work
+- Dispatch domain events
+
+Must NOT:
+
+- Contain business logic
+- Perform SQL
+- Parse HTTP
+- Access ORM directly
+
+Example:
+
+```python
+def allocate(cmd: Allocate, uow: AbstractUnitOfWork):
+    with uow:
+        order = uow.orders.get(cmd.order_id)
+        order.allocate(cmd.batch_ref)
+        uow.commit()
+```
 
 ---
 
 # 6. Repository Pattern
 
-Purpose:
-- Abstract persistent storage.
-- Allow domain logic to be tested without database.
+Interface (domain/repository.py):
+
+```python
+class AbstractRepository(ABC):
+    @abstractmethod
+    def add(self, entity): ...
+    
+    @abstractmethod
+    def get(self, ref): ...
+```
 
 Rules:
 
-- Define repository interface near the domain.
-- Concrete repository implementations live in infrastructure.
-- One repository per aggregate.
-- Repository should return domain objects, not ORM models.
-
-Avoid:
-- Domain model depending on ORM.
-- Exposing ORM objects outside infrastructure.
+- Repository returns domain objects
+- Never return ORM models
+- One repository per aggregate
+- Domain depends only on abstract interface
 
 ---
 
 # 7. Unit of Work Pattern
 
-Purpose:
-- Manage transactional consistency.
-- Define atomic operations.
+- Defines transaction boundary
+- Exposes repositories
+- Controls commit/rollback
+- All writes inside `with uow:`
 
-Rules:
+Never:
 
-- A Unit of Work represents a single transaction boundary.
-- It exposes repositories.
-- It tracks new domain events.
-- It commits or rolls back atomically.
+- Commit outside UoW
+- Scatter commits across codebase
+
+---
+
+# 8. Commands & Events
+
+Commands:
+
+- Represent intent
+- Handled by one handler
+- Cause state change
+
+Events:
+
+- Represent facts
+- Can have multiple handlers
+- Trigger side effects
+
+Domain emits events.
+Service layer dispatches them.
+
+---
+
+# 9. Message Bus (Optional)
+
+Introduce when:
+
+- Multiple side effects exist
+- Event-driven coordination is needed
+
+Handlers must:
+
+- Be small
+- Be single-responsibility
+- Avoid hidden coupling
+
+---
+
+# 10. CQRS Guidance
+
+- Writes go through domain model.
+- Reads may bypass domain for performance.
+- Never embed complex invariants in read paths.
+
+---
+
+# 11. Entrypoints Must Be Thin
+
+Entrypoints:
+
+- Parse input
+- Convert to command
+- Call service layer
+- Return response
+
+Nothing else.
+
+---
+
+# 12. Bootstrap & Dependency Injection
+
+All wiring happens in `bootstrap.py`.
+
+- Inject repositories and UoW
+- Avoid globals
+- Avoid hidden singletons
+- Prefer explicit construction
+
+---
+
+# 13. Readability Rules
+
+- Move complex expressions into helper functions.
+- Avoid repeated logic.
+- Avoid clever slicing (especially negative stride).
+- Avoid `for/else` loops.
+- Prefer unpacking over indexing.
+- Avoid unpacking into 4+ variables.
+
+Prefer:
+
+- `enumerate()` over `range(len())`
+- `zip()` over manual indexing
+- `itertools.zip_longest()` when lengths differ
+
+---
+
+# 14. Function & API Design
+
+- Never return `None` to signal failure.
+- Raise explicit exceptions.
+- Use tuples only for small multi-returns.
+- Use `@dataclass` for structured returns.
+
+Parameter rules:
+
+- Prefer keyword arguments.
+- Use keyword-only args (`*`) when clarity matters.
+- Use positional-only args (`/`) to reduce API coupling.
+- Never use mutable default arguments.
+- Use `None` for dynamic defaults.
+
+---
+
+# 15. Dictionary Rules
+
+Prefer:
+
+- `defaultdict` for accumulation
+- `get()` for external dictionaries
 
 Avoid:
-- Ad-hoc commits scattered through code.
-- Read-modify-write cycles without concurrency control.
+
+- `setdefault()` when default construction is expensive
+- Deeply nested dictionaries
+- Implicit reliance on insertion order
 
 ---
 
-# 8. Service Layer Pattern
+# 16. Comprehensions & Generators
 
-Purpose:
-- Define use cases.
-- Orchestrate domain + repository interactions.
+- Prefer list comprehensions over `map()` and `filter()`.
+- Avoid more than 2 control clauses in a comprehension.
+- Prefer generators for large/streaming inputs.
+- Avoid iterating over the same iterator twice.
+- Prefer `yield from` over manual nested loops.
+- Avoid `send()` and `throw()` for control flow.
+
+---
+
+# 17. Concurrency & Consistency
+
+Aggregates define consistency boundaries.
+
+- Modify one aggregate per transaction
+- Use optimistic concurrency (version numbers)
+- Avoid unsafe read-modify-write cycles
+
+Threads:
+
+- Protect shared state with `threading.Lock`
+- Use `Queue` for pipelines
+
+Async:
+
+- Prefer async/await for I/O concurrency
+- Avoid blocking calls in coroutines
+
+---
+
+# 18. Performance Rules
+
+- Profile before optimizing (`cProfile`)
+- Use:
+  - `deque` for FIFO
+  - `heapq` for priority queues
+  - `bisect` for sorted lists
+- Avoid `list.pop(0)`
+- Use `Decimal(str_value)` for financial calculations
+- Use `memoryview` + `bytearray` for zero-copy I/O
+
+---
+
+# 19. Error Handling
+
+- Keep `try` blocks small
+- Use `else` to separate success paths
+- Use context managers for resource control
+- Raise domain-specific exceptions
+
+---
+
+# 20. Testing Strategy
+
+Follow test pyramid:
+
+1. Domain unit tests (no DB)
+2. Service tests with fake repositories
+3. Integration tests with real DB
+4. Minimal E2E tests
 
 Rules:
 
-- Service layer methods correspond to application use cases.
-- Service layer coordinates:
-  - Repositories
-  - Unit of Work
-  - Domain methods
-- Service layer contains orchestration logic only.
-
-Avoid:
-- Business rules in API routes.
-- Direct repository usage from entrypoints.
-
-Entrypoints should be thin:
-
-```python
-@app.post("/allocate")
-def allocate_endpoint():
-    cmd = AllocateCommand(...)
-    messagebus.handle(cmd)
-```
+- Domain tests must not import infrastructure
+- Prefer fakes over mocks
+- Mock only external systems
+- Use `unittest.TestCase`
+- Use `assertEqual()` over `assert`
+- Use `subTest()` for data-driven tests
 
 ---
 
-# 9. Commands & Events
+# 21. Strict Anti-Patterns
 
-## Commands
+Forbidden:
 
-- Represent intent ("Do this").
-- Handled by a single handler.
-- Trigger state changes.
-
-## Events
-
-- Represent something that happened.
-- Can have multiple handlers.
-- Trigger side effects.
-
-Rules:
-
-- Domain emits events.
-- Handlers respond.
-- Avoid implicit side effects.
-- Keep handlers single-responsibility.
+- Fat controllers
+- Business logic in API routes
+- Domain importing ORM
+- Returning ORM models outside infrastructure
+- Scattered commits
+- Global mutable state
+- Deep nested data structures as domain model
+- Mutable default arguments
+- Returning `None` to signal failure
 
 ---
 
-# 10. Message Bus Pattern
+# 22. Agent Mental Checklist
 
-Purpose:
-- Route commands and events to handlers.
+When implementing a backend feature:
 
-Rules:
-
-- System becomes message-driven.
-- Handlers are granular and single-purpose.
-- Handlers may publish new events.
-
-Tradeoffs:
-
-- Increased architectural complexity.
-- Event schema duplication risk.
-- Eventual consistency considerations.
-
----
-
-# 11. CQRS (Command Query Responsibility Segregation)
-
-Principle:
-- Reads and writes have different responsibilities.
-
-Rules:
-
-- Domain model optimized for writes.
-- Query layer may bypass domain for optimized reads.
-- Do not force complex domain logic into read paths.
-
----
-
-# 12. Dependency Injection
-
-Rules:
-
-- Inject repositories and UoW into services.
-- Avoid global state.
-- Avoid hard-coded infrastructure dependencies.
-- Use manual DI (bootstrap script) instead of complex frameworks unless needed.
-
-Example:
-
-```python
-def bootstrap():
-    repo = SqlAlchemyRepository(...)
-    uow = SqlAlchemyUnitOfWork(...)
-    return MessageBus(uow=uow)
-```
-
----
-
-# 13. Testing Strategy (TDD-Oriented)
-
-Follow the test pyramid:
-
-1. Fast domain unit tests.
-2. Service-layer tests with fake repositories.
-3. Minimal integration tests.
-4. Very few end-to-end tests.
-
-Rules:
-
-- Domain tests must not touch database.
-- Use fakes instead of mocks where possible.
-- Use mocks only at boundaries.
-- Avoid patching internals.
-
-Test at highest possible abstraction.
-
----
-
-# 14. Concurrency & Data Integrity
-
-Rules:
-
-- Define consistency boundaries via aggregates.
-- Use optimistic concurrency (version numbers) when possible.
-- Use pessimistic locking only when necessary.
-- Understand transaction isolation levels.
-
-Avoid:
-- Read-modify-write anti-patterns without safeguards.
-
----
-
-# 15. Event-Driven Architecture Considerations
-
-Be aware of:
-
-- Event schema evolution.
-- Message reliability (at-least-once vs at-most-once).
-- Eventual consistency.
-- Outbox pattern for reliability.
-
-Document events clearly.
-Version event schemas.
-
----
-
-# 16. Performance Guidelines
-
-- Profile before optimizing (`cProfile`).
-- Avoid SELECT N+1 problems.
-- Use `deque` for FIFO.
-- Use `heapq` for priority queues.
-- Use `bisect` for sorted lists.
-- Use `Decimal(str_value)` for financial values.
-- Avoid `list.pop(0)`.
-
----
-
-# 17. Infrastructure & Adapters
-
-Use Ports & Adapters (Hexagonal Architecture):
-
-- Define ports (interfaces) in inner layers.
-- Implement adapters in outer layers.
-- Infrastructure is replaceable.
-
-Adapters include:
-- Web frameworks
-- Databases
-- Message brokers
-- Email systems
-
-They translate external input → commands.
-
----
-
-# 18. Refactoring Strategy
-
-When evolving an existing system:
-
-- Introduce repository abstraction first.
-- Extract service layer next.
-- Isolate domain logic.
-- Gradually introduce message bus.
-- Avoid rewriting entire system at once.
-
-Prefer incremental strangler-pattern refactoring.
-
----
-
-# 19. When NOT to Use These Patterns
-
-Avoid over-architecting:
-
-- Small scripts
-- Simple CRUD apps
-- Throwaway prototypes
-
-Introduce patterns only when complexity justifies them.
-
----
-
-# 20. Summary Mental Model
-
-Think in terms of:
-
-- Use cases (Service Layer)
-- Business rules (Domain Model)
-- Consistency boundaries (Aggregates + UoW)
-- Persistence abstraction (Repository)
-- Intent vs fact (Commands vs Events)
-- Dependency direction (Inward only)
-- Replaceable infrastructure (Adapters)
+1. Identify the use case.
+2. Define a command.
+3. Model domain behavior explicitly.
+4. Use repository abstraction.
+5. Wrap changes in Unit of Work.
+6. Keep entrypoint thin.
+7. Inject dependencies via bootstrap.
+8. Write domain tests first.
+9. Ensure layering rules are respected.
+10. Refactor if complexity leaks across layers.
 
 Goal:
 
-> Allow system complexity to grow more slowly than system size.
+> Complexity should grow slower than the system.
+> The domain should remain pure.
+> The system should stay testable and evolvable.
